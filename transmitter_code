@@ -1,0 +1,113 @@
+#include <WiFi.h>
+#include <esp_now.h>
+#include <Wire.h>
+#include <MPU6050_light.h>
+
+// ===== RECEIVER MAC ADDRESS =====
+uint8_t receiverMac[] = {0x00, 0x70, 0x07, 0x25, 0x25, 0xDC};
+
+// ===== STRUCT (MUST MATCH RECEIVER) =====
+typedef struct {
+  bool f;
+  bool b;
+  bool l;
+  bool r;
+} message;
+
+message data;
+
+// ===== MPU OBJECT =====
+MPU6050 mpu(Wire);
+
+// ===== TIMER =====
+unsigned long timer = 0;
+
+// ===== ESP-NOW SEND CALLBACK (ESP32 CORE 3.x) =====
+void OnDataSent(const wifi_tx_info_t *info, esp_now_send_status_t status) {
+  Serial.print("Send Status: ");
+  Serial.println(status == ESP_NOW_SEND_SUCCESS ? "SUCCESS" : "FAIL");
+}
+
+void setup() {
+  Serial.begin(115200);
+
+  // WiFi
+  WiFi.mode(WIFI_STA);
+  Serial.println("ESP32 Transmitter Started");
+
+  // ESP-NOW INIT
+  if (esp_now_init() != ESP_OK) {
+    Serial.println("ESP-NOW init failed");
+    return;
+  }
+
+  esp_now_register_send_cb(OnDataSent);
+
+  // ADD PEER
+  esp_now_peer_info_t peerInfo = {};
+  memcpy(peerInfo.peer_addr, receiverMac, 6);
+  peerInfo.channel = 0;
+  peerInfo.encrypt = false;
+
+  if (esp_now_add_peer(&peerInfo) != ESP_OK) {
+    Serial.println("Failed to add peer");
+    return;
+  }
+
+  // I2C
+  Wire.begin(21, 22);
+
+  // MPU INIT
+  byte status = mpu.begin();
+  Serial.print("MPU6050 status: ");
+  Serial.println(status);
+
+  if (status != 0) {
+    Serial.println("MPU6050 connection failed");
+    while (1);
+  }
+
+  Serial.println("Keep MPU still, calibrating...");
+  delay(1000);
+  mpu.calcOffsets();
+  Serial.println("MPU Ready!");
+}
+
+void loop() {
+  mpu.update();
+
+  if (millis() - timer > 50) {
+    float x = mpu.getAngleX();
+    float y = mpu.getAngleY();
+
+    // RESET
+    data.f = data.b = data.l = data.r = false;
+
+    // GESTURE LOGIC
+    if (x > 25)        data.f = true;   // Forward
+    else if (x < -25)  data.b = true;   // Back
+
+    else if (y > 25)   data.r = true;   // Right
+    else if (y < -25)  data.l = true;   // Left
+
+    // SEND DATA
+    esp_now_send(receiverMac, (uint8_t *)&data, sizeof(data));
+
+    // DEBUG
+    Serial.print("X:");
+    Serial.print(x);
+    Serial.print(" Y:");
+    Serial.print(y);
+    Serial.print(" | F:");
+    Serial.print(data.f);
+    Serial.print(" B:");
+    Serial.print(data.b);
+    Serial.print(" L:");
+    Serial.print(data.l);
+    Serial.print(" R:");
+    Serial.println(data.r);
+
+    timer = millis();
+  }
+}
+
